@@ -5,14 +5,23 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "lib/stb_image_write.h"
 
-#define CHANNELS 3
 #define BLOCK_SIZE 32
+#define CHANNELS 3
+
+#define CUDACHECK(err) do { cuda_check((err), __FILE__, __LINE__); } while(false)
+inline void cuda_check(cudaError_t error_code, const char* file, int line) {
+    if (error_code != cudaSuccess) {
+        fprintf(stderr, "CUDA Error %d: %s. In file '%s' on line %d\n",
+                error_code, cudaGetErrorString(error_code), file, line);
+        fflush(stderr);
+        exit(error_code);
+    }
+}
 
 const char* inputImage = "../res/input.png";
 const char* outputImage = "../res/output.png";
 
 unsigned int* loadImageData (const unsigned char* img, unsigned int size);
-
 unsigned char* saveImageData (const unsigned int* img, unsigned int size);
 
 __global__ void erosionKernel(const unsigned int* input, unsigned int* output, int width, int height) {
@@ -61,27 +70,28 @@ int main() {
 
     unsigned int imageSize = width * height * sizeof(unsigned int);
 
-    cudaMalloc((void**)&deviceInput, imageSize);
-    cudaMalloc((void**)&deviceOutput, imageSize);
-    cudaMemcpy(deviceInput, hostInput, imageSize, cudaMemcpyHostToDevice);
+    CUDACHECK(cudaMalloc((void**)&deviceInput, imageSize));
+    CUDACHECK(cudaMalloc((void**)&deviceOutput, imageSize));
+    CUDACHECK(cudaMemcpy(deviceInput, hostInput, imageSize, cudaMemcpyHostToDevice));
 
+    dim3 gridSize((width + BLOCK_SIZE - 1) / BLOCK_SIZE, (height + BLOCK_SIZE - 1) / BLOCK_SIZE);
     dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 gridSize((width + blockSize.x - 1) / blockSize.x, (height + blockSize.y - 1) / blockSize.y);
 
     for (unsigned int i = 0; i < depth; ++i) {
         erosionKernel<<<gridSize, blockSize>>>(deviceInput, deviceOutput, width, height);
-        cudaMemcpy(deviceInput, deviceOutput, imageSize, cudaMemcpyDeviceToDevice);
+        CUDACHECK(cudaPeekAtLastError()); //check if kernel failed
+        CUDACHECK(cudaMemcpy(deviceInput, deviceOutput, imageSize, cudaMemcpyDeviceToDevice));
     }
 
-    cudaMemcpy(hostOutput, deviceOutput, imageSize, cudaMemcpyDeviceToHost);
+    CUDACHECK(cudaMemcpy(hostOutput, deviceOutput, imageSize, cudaMemcpyDeviceToHost));
 
     stbi_write_png(outputImage, width, height, CHANNELS,
                    saveImageData(hostOutput, width * height), width * CHANNELS);
 
     stbi_image_free(image);
 
-    cudaFree(deviceInput);
-    cudaFree(deviceOutput);
+    CUDACHECK(cudaFree(deviceInput));
+    CUDACHECK(cudaFree(deviceOutput));
 
     free(hostInput);
     free(hostOutput);
@@ -91,7 +101,6 @@ int main() {
 
 unsigned int* loadImageData (const unsigned char* img, unsigned int size) {
     unsigned int* data = new unsigned int[size / CHANNELS];
-
     int sum = 0;
 
     for (unsigned int i = 0; i < size; ++i) {
